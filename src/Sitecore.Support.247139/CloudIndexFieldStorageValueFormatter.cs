@@ -1,26 +1,22 @@
-﻿namespace Sitecore.XA.Foundation.Search.Providers.Azure
+﻿namespace Sitecore.Support.XA.Foundation.Search.Providers.Azure
 {
-
+  using Sitecore;
   using Sitecore.ContentSearch;
-  using Sitecore.ContentSearch.Abstractions;
   using Sitecore.ContentSearch.Azure;
-  using Sitecore.ContentSearch.Azure.Http;
+  using Sitecore.ContentSearch.Azure.Converters;
   using Sitecore.ContentSearch.Azure.Models;
   using Sitecore.ContentSearch.Azure.Schema;
   using Sitecore.ContentSearch.Converters;
   using Sitecore.Diagnostics;
-  using Sitecore.Exceptions;
   using Sitecore.XA.Foundation.Search.Providers.Azure.Geospatial;
   using System;
   using System.Collections;
   using System.Collections.Generic;
   using System.ComponentModel;
   using System.Globalization;
-  using System.Linq;
-  using System.Xml;
+  using System.Runtime.InteropServices;
 
-
-  public class CloudIndexFieldStorageValueFormatter : IndexFieldStorageValueFormatter, ISearchIndexInitializable
+  public class CloudIndexFieldStorageValueFormatter : Sitecore.ContentSearch.Azure.Converters.CloudIndexFieldStorageValueFormatter, ISearchIndexInitializable
   {
     private ICloudSearchIndex _searchIndex;
 
@@ -29,11 +25,35 @@
       base.EnumerableConverter = new IndexFieldEnumerableConverter(this);
     }
 
+    private object ConvertToType(object value, Type expectedType, ITypeDescriptorContext context)
+    {
+      object obj2;
+      Type c = value.GetType();
+      if (c == expectedType)
+      {
+        return value;
+      }
+      if (typeof(IEnumerable<string>).IsAssignableFrom(c) && typeof(IEnumerable<string>).IsAssignableFrom(expectedType))
+      {
+        return value;
+      }
+      TypeConverter converter = this.GetConverter(value.GetType());
+      if ((converter != null) && converter.CanConvertTo(context, expectedType))
+      {
+        return converter.ConvertTo(context, CultureInfo.CurrentCulture, value, expectedType);
+      }
+      if (!this.TryConvertToPrimitiveType(value, expectedType, context, out obj2) && !this.TryConvertToEnumerable(value, expectedType, context, out obj2))
+      {
+        throw new InvalidCastException($"Cannon cast value '{value}' of type '{value.GetType()}' to '{expectedType}'.");
+      }
+      return obj2;
+    }
+
     public override object FormatValueForIndexStorage(object value, string fieldName)
     {
       Assert.IsNotNullOrEmpty(fieldName, "fieldName");
-      object obj = value;
-      if (obj == null)
+      object obj2 = value;
+      if (obj2 == null)
       {
         return null;
       }
@@ -43,126 +63,32 @@
         return value;
       }
       ICloudSearchTypeMapper cloudTypeMapper = this._searchIndex.CloudConfiguration.CloudTypeMapper;
-      Type type = (fieldByCloudName.Type.ToLower(CultureInfo.InvariantCulture) == "edm.geographypoint") ? typeof(GeoPoint) : cloudTypeMapper.GetNativeType(fieldByCloudName.Type);
+      Type expectedType = (fieldByCloudName.Type.ToLower(CultureInfo.InvariantCulture) == "edm.geographypoint") ? typeof(GeoPoint) : cloudTypeMapper.GetNativeType(fieldByCloudName.Type);
       IndexFieldConverterContext context = new IndexFieldConverterContext(fieldName);
       try
       {
-        if (obj is IIndexableId)
+        if (obj2 is IIndexableId)
         {
-          obj = this.FormatValueForIndexStorage(((IIndexableId)obj).Value, fieldName);
+          obj2 = this.FormatValueForIndexStorage(((IIndexableId)obj2).Value, fieldName);
         }
-        else if (obj is IIndexableUniqueId)
+        else if (obj2 is IIndexableUniqueId)
         {
-          obj = this.FormatValueForIndexStorage(((IIndexableUniqueId)obj).Value, fieldName);
+          obj2 = this.FormatValueForIndexStorage(((IIndexableUniqueId)obj2).Value, fieldName);
         }
         else
         {
-          obj = this.ConvertToType(obj, type, context);
+          obj2 = this.ConvertToType(obj2, expectedType, context);
         }
-        if (obj != null && !(obj is string) && !type.IsInstanceOfType(obj) && (!(obj is IEnumerable<string>) || !typeof(IEnumerable<string>).IsAssignableFrom(type)))
+        if ((obj2 != null) && ((!(obj2 is string) && !expectedType.IsInstanceOfType(obj2)) && (!(obj2 is IEnumerable<string>) || !typeof(IEnumerable<string>).IsAssignableFrom(expectedType))))
         {
-          throw new InvalidCastException(string.Format("Converted value has type '{0}', but '{1}' is expected.", obj.GetType(), type));
-        }
-      }
-      catch (Exception innerException)
-      {
-        throw new NotSupportedException(string.Format("Field '{0}' with value '{1}' of type '{2}' cannot be converted to type '{3}' declared for the field in the schema.", new object[]
-        {
-                    fieldName,
-                    value,
-                    value.GetType(),
-                    type
-        }), innerException);
-      }
-      return obj;
-    }
-
-    public override object ReadFromIndexStorage(object indexValue, string fieldName, Type destinationType)
-    {
-      if (indexValue == null)
-      {
-        return null;
-      }
-      if (destinationType == null)
-      {
-        throw new ArgumentNullException("destinationType");
-      }
-      if (indexValue.GetType() == destinationType)
-      {
-        return indexValue;
-      }
-      if (indexValue is IEnumerable && !(indexValue is string))
-      {
-        object[] array = (indexValue as IEnumerable).Cast<object>().ToArray<object>();
-        if (array.Length == 0)
-        {
-          return null;
-        }
-        if (array.Length == 1)
-        {
-          return this.ReadFromIndexStorageBase(array[0], fieldName, destinationType);
+          throw new InvalidCastException($"Converted value has type '{obj2.GetType()}', but '{expectedType}' is expected.");
         }
       }
-      object obj = this.ReadFromIndexStorageBase(indexValue, fieldName, destinationType);
-      if (obj != null || !(destinationType != typeof(string)) || !typeof(IEnumerable).IsAssignableFrom(destinationType))
+      catch (Exception exception)
       {
-        return obj;
+        throw new NotSupportedException($"Field '{fieldName}' with value '{value}' of type '{value.GetType()}' cannot be converted to type '{expectedType}' declared for the field in the schema.", exception);
       }
-      if (destinationType.IsInterface)
-      {
-        return Activator.CreateInstance(typeof(List<>).MakeGenericType(destinationType.GetGenericArguments()));
-      }
-      return Activator.CreateInstance(destinationType);
-    }
-
-    public override void AddConverter(XmlNode configNode)
-    {
-      XmlAttribute expr_10 = configNode.Attributes["handlesType"];
-      if (expr_10 == null)
-      {
-        throw new ConfigurationException("Attribute 'handlesType' is required.");
-      }
-      if (configNode.Attributes["typeConverter"] == null)
-      {
-        throw new ConfigurationException("Attribute 'typeConverter' is required.");
-      }
-      string arg_8E_0 = expr_10.Value;
-      string value = configNode.Attributes["typeConverter"].Value;
-      XmlDocument xmlDocument = new XmlDocument();
-      if (configNode.HasChildNodes)
-      {
-        xmlDocument.LoadXml(string.Format("<converter type=\"{0}\">{1}</converter>", value, configNode.InnerXml));
-      }
-      else
-      {
-        xmlDocument.LoadXml(string.Format("<converter type=\"{0}\" />", value));
-      }
-      Type type = Type.GetType(arg_8E_0);
-      ICloudSearchIndex expr_9A = this._searchIndex;
-      IFactoryWrapper arg_B2_0;
-      if (expr_9A == null)
-      {
-        arg_B2_0 = null;
-      }
-      else
-      {
-        IObjectLocator expr_A6 = expr_9A.Locator;
-        arg_B2_0 = ((expr_A6 != null) ? expr_A6.GetInstance<IFactoryWrapper>() : null);
-      }
-      TypeConverter converter = (arg_B2_0 ?? new FactoryWrapper()).CreateObject<TypeConverter>(xmlDocument.DocumentElement, true);
-      base.AddConverter(type, converter);
-    }
-
-    public new void Initialize(ISearchIndex searchIndex)
-    {
-      ICloudSearchIndex cloudSearchIndex = searchIndex as ICloudSearchIndex;
-      ICloudSearchIndex expr_09 = cloudSearchIndex;
-      if (expr_09 == null)
-      {
-        throw new NotSupportedException(string.Format("Only {0} is supported", typeof(CloudSearchProviderIndex).Name));
-      }
-      this._searchIndex = expr_09;
-      base.Initialize(searchIndex);
+      return obj2;
     }
 
     private TypeConverter GetConverter(Type type)
@@ -171,9 +97,8 @@
       if (typeConverter == null)
       {
         Type[] interfaces = type.GetInterfaces();
-        for (int i = 0; i < interfaces.Length; i++)
+        foreach (Type type2 in interfaces)
         {
-          Type type2 = interfaces[i];
           typeConverter = base.Converters.GetTypeConverter(type2);
           if (typeConverter != null)
           {
@@ -184,109 +109,45 @@
       return typeConverter;
     }
 
-    private object ConvertToType(object value, Type expectedType, ITypeDescriptorContext context)
+    public void Initialize(ISearchIndex searchIndex)
     {
-      Type type = value.GetType();
-      if (type == expectedType)
+      ICloudSearchIndex index = searchIndex as ICloudSearchIndex;
+      if (index == null)
       {
-        return value;
+        throw new NotSupportedException($"Only {typeof(CloudSearchProviderIndex).Name} is supported");
       }
-      if (typeof(IEnumerable<string>).IsAssignableFrom(type) && typeof(IEnumerable<string>).IsAssignableFrom(expectedType))
-      {
-        return value;
-      }
-      TypeConverter converter = this.GetConverter(value.GetType());
-      if (converter != null && converter.CanConvertTo(context, expectedType))
-      {
-        return converter.ConvertTo(context, CultureInfo.CurrentCulture, value, expectedType);
-      }
-      object result;
-      if (this.TryConvertToPrimitiveType(value, expectedType, context, out result))
-      {
-        return result;
-      }
-      if (this.TryConvertToEnumerable(value, expectedType, context, out result))
-      {
-        return result;
-      }
-      throw new InvalidCastException(string.Format("Cannon cast value '{0}' of type '{1}' to '{2}'.", value, value.GetType(), expectedType));
-    }
-
-    private bool TryConvertToPrimitiveType(object value, Type expectedType, ITypeDescriptorContext context, out object result)
-    {
-      if (value as string == string.Empty && expectedType.IsValueType)
-      {
-        result = Activator.CreateInstance(expectedType);
-        return true;
-      }
-      if (value is string)
-      {
-        string text = (string)value;
-        if (expectedType == typeof(bool))
-        {
-          if (text == "1")
-          {
-            result = true;
-            return true;
-          }
-          if (text == "0" || text == string.Empty)
-          {
-            result = false;
-            return true;
-          }
-        }
-        else if (expectedType == typeof(DateTimeOffset))
-        {
-          if (text.Length > 15 && text[15] == ':')
-          {
-            result = DateUtil.ParseDateTime(text, DateTime.MinValue);
-          }
-          else
-          {
-            result = DateTimeOffset.Parse(text);
-          }
-          return true;
-        }
-      }
-      if (value is IConvertible && (expectedType == typeof(bool) || expectedType == typeof(string) || expectedType == typeof(int) || expectedType == typeof(long) || expectedType == typeof(double) || expectedType == typeof(float)))
-      {
-        result = System.Convert.ChangeType(value, expectedType);
-        return true;
-      }
-      result = null;
-      return false;
+      this._searchIndex = index;
+      base.Initialize(this._searchIndex);
     }
 
     private bool TryConvertToEnumerable(object value, Type expectedType, ITypeDescriptorContext context, out object result)
     {
       if (typeof(IEnumerable<string>).IsAssignableFrom(expectedType))
       {
-        if (value is string || !(value is IEnumerable))
+        if ((value is string) || !(value is IEnumerable))
         {
-          object obj = this.ConvertToType(value, typeof(string), context);
-          if (!(obj is string))
+          object obj2 = this.ConvertToType(value, typeof(string), context);
+          if (!(obj2 is string))
           {
             result = null;
             return false;
           }
-          result = new string[]
-          {
-                        (string)obj
-          };
+          string[] textArray1 = new string[] { (string)obj2 };
+          result = textArray1;
           return true;
         }
-        else if (!(value is IEnumerable<string>))
+        if (!(value is IEnumerable<string>))
         {
           List<string> list = new List<string>();
-          foreach (object current in ((IEnumerable)value))
+          foreach (object obj3 in (IEnumerable)value)
           {
-            object obj2 = this.ConvertToType(current, typeof(string), context);
-            if (!(obj2 is string))
+            object obj4 = this.ConvertToType(obj3, typeof(string), context);
+            if (!(obj4 is string))
             {
               result = null;
               return false;
             }
-            list.Add((string)obj2);
+            list.Add((string)obj4);
           }
           result = list.ToArray();
           return true;
@@ -296,55 +157,50 @@
       return false;
     }
 
-    private object ReadFromIndexStorageBase(object indexValue, string fieldName, Type destinationType)
+    private bool TryConvertToPrimitiveType(object value, Type expectedType, ITypeDescriptorContext context, out object result)
     {
-      if (indexValue == null)
+      if (((value as string) == string.Empty) && expectedType.IsValueType)
       {
-        return null;
+        result = Activator.CreateInstance(expectedType);
+        return true;
       }
-      if (destinationType == null)
+      if (value is string)
       {
-        throw new ArgumentNullException("destinationType");
-      }
-      if (destinationType.IsInstanceOfType(indexValue))
-      {
-        return indexValue;
-      }
-      object result;
-      try
-      {
-        IndexFieldConverterContext context = new IndexFieldConverterContext(fieldName);
-        TypeConverter typeConverter = base.Converters.GetTypeConverter(destinationType);
-        if (base.EnumerableConverter != null && base.EnumerableConverter.CanConvertTo(destinationType))
+        string str = (string)value;
+        if (expectedType == typeof(bool))
         {
-          if (indexValue is IEnumerable && indexValue.GetType() != typeof(string))
+          switch (str)
           {
-            result = base.EnumerableConverter.ConvertTo(context, CultureInfo.InvariantCulture, indexValue, destinationType);
-            return result;
-          }
-          if (destinationType != typeof(string) && !indexValue.Equals(string.Empty))
-          {
-            result = base.EnumerableConverter.ConvertTo(context, CultureInfo.InvariantCulture, new object[]
-            {
-                            indexValue
-            }, destinationType);
-            return result;
+            case "1":
+              result = true;
+              return true;
+
+            case "0":
+            case "":
+              result = false;
+              return true;
           }
         }
-        if (typeof(IConvertible).IsAssignableFrom(destinationType) && !indexValue.Equals(string.Empty))
+        else if (expectedType == typeof(DateTimeOffset))
         {
-          result = System.Convert.ChangeType(indexValue, destinationType);
-        }
-        else
-        {
-          result = ((typeConverter != null) ? typeConverter.ConvertFrom(context, CultureInfo.InvariantCulture, indexValue) : null);
+          if ((str.Length > 15) && (str[15] == ':'))
+          {
+            result = DateUtil.ParseDateTime(str, DateTime.MinValue);
+          }
+          else
+          {
+            result = DateTimeOffset.Parse(str);
+          }
+          return true;
         }
       }
-      catch (InvalidCastException ex)
+      if ((value is IConvertible) && (((((expectedType == typeof(bool)) || (expectedType == typeof(string))) || ((expectedType == typeof(int)) || (expectedType == typeof(long)))) || (expectedType == typeof(double))) || (expectedType == typeof(float))))
       {
-        throw new InvalidCastException(string.Format("Could not convert value of type {0} to destination type {1}: {2}", indexValue.GetType().FullName, destinationType.FullName, ex.Message), ex);
+        result = System.Convert.ChangeType(value, expectedType);
+        return true;
       }
-      return result;
+      result = null;
+      return false;
     }
   }
 }
